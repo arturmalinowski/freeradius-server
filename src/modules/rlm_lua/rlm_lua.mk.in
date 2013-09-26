@@ -1,0 +1,36 @@
+#######################################################################
+#
+# TARGET should be set by autoconf only.  Don't touch it.
+#
+# The SOURCES definition should list ALL source files.
+#
+# SRC_CFLAGS defines addition C compiler flags.  You usually don't
+# want to modify this, though.  Get it from autoconf.
+#
+# The TGT_LDLIBS definition should list ALL required libraries.
+#
+#######################################################################
+
+TARGETNAME	:= @targetname@
+
+ifneq "$(TARGETNAME)" ""
+TARGET		:= $(TARGETNAME).a
+endif
+
+SOURCES		:= $(TARGETNAME).c
+
+SRC_CFLAGS	:= @lua_cflags@
+TGT_LDLIBS	:= @lua_ldflags@
+
+TGT_PREREQS	:= libfreeradius-lua.a
+
+install: $(R)$(modconfdir)/lua/example.lua
+
+$(R)$(modconfdir)/lua: | $(R)$(modconfdir)
+	@echo INSTALL $(patsubst $(R)$(raddbdir)%,raddb%,$@)
+	@$(INSTALL) -d -m 750 $@
+
+$(R)$(modconfdir)/lua/example.lua: src/modules/rlm_lua/example.lua | $(R)$(modconfdir)/lua
+	@$(ECHO) INSTALL $(notdir $<)
+	@$(INSTALL) -m 755 $< $(R)$(modconfdir)/lua
+

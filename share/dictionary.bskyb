@@ -18,5 +18,6 @@ ATTRIBUTE	Sky-Wifi-Filter-Profile			3    string
 ATTRIBUTE	Sky-Wifi-Billing-Class			4    octets
 ATTRIBUTE	Sky-Wifi-Provider-ID			5    integer
 ATTRIBUTE	Sky-Wifi-Credentials			6    string
+ATTRIBUTE	Sky-Ethernet-Test			7    ether
 
 END-VENDOR	BSkyB

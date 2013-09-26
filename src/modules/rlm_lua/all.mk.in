@@ -1,0 +1,29 @@
+#######################################################################
+#
+# TARGET should be set by autoconf only.  Don't touch it.
+#
+# The SOURCES definition should list ALL source files.
+#
+# SRC_CFLAGS defines addition C compiler flags.  You usually don't
+# want to modify this, though.  Get it from autoconf.
+#
+# The TGT_LDLIBS definition should list ALL required libraries.
+#
+#######################################################################
+
+TARGETNAME	:= @targetname@
+
+ifneq "$(TARGETNAME)" ""
+TARGET		:= $(TARGETNAME).a
+endif
+
+SOURCES		:= $(TARGETNAME).c lua.c
+
+SRC_CFLAGS	:= @lua_cflags@
+TGT_LDLIBS	:= @lua_ldflags@
+
+install: install.raddbdir $(R)$(raddbdir)/example.lua
+
+$(R)$(raddbdir)/example.lua: src/modules/$(TARGETNAME)/example.lua
+	@$(ECHO) INSTALL $(notdir $<)
+	@$(INSTALL) -m 755 $< $(R)$(raddbdir)/
