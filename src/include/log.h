@@ -130,7 +130,8 @@ void log_talloc_report(TALLOC_CTX *ctx);
 #define DEBUG4(fmt, ...)	_SL(L_DBG, L_DBG_LVL_MAX, fmt, ## __VA_ARGS__)
 
 #define INFO(fmt, ...)		_SL(L_INFO, L_DBG_LVL_OFF, fmt, ## __VA_ARGS__)
-#define DEBUGI(fmt, ...)	_SL(L_INFO, L_DBG_LVL_1, fmt, ## __VA_ARGS__)
+#define IDEBUG(fmt, ...)	_SL(L_INFO, L_DBG_LVL_1, fmt, ## __VA_ARGS__)
+#define IDEBUG2(fmt, ...)	_SL(L_INFO, L_DBG_LVL_2, fmt, ## __VA_ARGS__)
 
 #define WARN(fmt, ...)		_SL(L_WARN, L_DBG_LVL_OFF, fmt, ## __VA_ARGS__)
 #define WDEBUG(fmt, ...)	_SL(L_DBG_WARN, L_DBG_LVL_1, fmt, ## __VA_ARGS__)

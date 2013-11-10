@@ -113,7 +113,7 @@ static int krb5_instantiate(CONF_SECTION *conf, void *instance)
 
 #ifndef KRB5_IS_THREAD_SAFE
 	if (!krb5_is_thread_safe()) {
-		DEBUGI("libkrb5 is not threadsafe, recompile it with thread support enabled");
+		IDEBUG("libkrb5 is not threadsafe, recompile it with thread support enabled");
 		WDEBUG("rlm_krb5 will run in single threaded mode, performance may be degraded");
 	} else {
 		WDEBUG("Build time libkrb5 was not threadsafe, but run time library claims to be");
