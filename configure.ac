@@ -120,7 +120,7 @@ dnl #  standard set of headers and libraries, instead were meant to use
 dnl #  one of the SDKs which contains system headers and libraries for
 dnl #  different versions of OSX and iOS.
 dnl #
-case "$host" in
+case "$target" in
   *-darwin*)
     dnl #
     dnl #  The version of GCC apple ships with Mavericks works out of the
@@ -152,6 +152,8 @@ case "$host" in
     fi
     ;;
 esac
+
+AC_SUBST(TARGET_SYSTEM, "$target")
 
 dnl #
 dnl #  Check for GNU cc
@@ -858,7 +860,7 @@ dnl #  Interix requires us to set -D_ALL_SOURCE, otherwise
 dnl #  getopt will be #included, but won't link.  <sigh>
 dnl #
 dnl #
-case "$host" in
+case "$target" in
   *-interix*)
     CFLAGS="$CFLAGS -D_ALL_SOURCE"
     ;;
@@ -1563,7 +1565,7 @@ dnl #  We need #stdio.h to define NULL on FreeBSD (at least)
 dnl #
 gethostbyaddrrstyle=""
 AC_MSG_CHECKING([gethostbyaddr_r() syntax])
-case "$host" in
+case "$target" in
   *-freebsd*)
     dnl #
     dnl #  With FreeBSD, check if there's a prototype for gethostbyaddr_r.

@@ -20,11 +20,11 @@ function authorize()
 
 
 
-for i in request['user-name'].next_iter() do 
+for i in request['user-name'].pairs() do
 	print(i)
 end
 
-for i in request['user-name'].next_iter() do 
+for i in request['user-name'].pairs() do
 	print(i)
 end
 	--tprint(get_attribute("user-name"))

@@ -25,106 +25,239 @@ RCSID("$Id$")
 
 #include "config.h"
 #include "lua.h"
-#include "../../include/libradius.h"
-#include "assert.h"
-
 
 #include <lauxlib.h>
 #include <lualib.h>
-
 
 #define RLM_LUA_STACK_SET()	int _rlm_lua_stack_state = lua_gettop(L)
 #define RLM_LUA_STACK_RESET()	lua_settop(L, _rlm_lua_stack_state)
 
 fr_thread_local_setup(REQUEST *, rlm_lua_request);	/* macro */
+fr_thread_local_setup(lua_State *, rlm_lua_interp);	/* macro */
 
-static int get_attribute(lua_State *L);
-static VALUE_PAIR* lua_to_c (REQUEST *request, lua_State *L, DICT_ATTR const *da);
-static int lua_next_attr(lua_State *L);
-
-static int rlm_lua_cdefs(lua_State *L)
+static int c_to_lua(lua_State *L, VALUE_PAIR const *vp)
 {
-	(void) luaL_dostring(L,"\
-		ffi = require(\"ffi\")\
-		ffi.cdef [[\
-			typedef enum log_type {\
-				L_AUTH = 2, L_INFO = 3, L_ERR = 4, L_WARN = 5,\
-				L_PROXY	= 6, L_ACCT = 7, L_DBG = 16, L_DBG_WARN = 17,\
-				L_DBG_ERR = 18, L_DBG_WARN2 = 19, L_DBG_ERR2 = 20} log_type_t;\
-				int radlog(log_type_t lvl, char const *fmt, ...);\
-			]]\
-		Fr = ffi.load(\"libfreeradius-server.so\")");
+	char	buf[1024];
 
+	if (!vp) return -1;
+
+	switch (vp->da->type) {
+	case PW_TYPE_ABINARY:
+	case PW_TYPE_DATE:
+	case PW_TYPE_ETHERNET:
+	case PW_TYPE_IPADDR:
+	case PW_TYPE_IPV6ADDR:
+	case PW_TYPE_IPV4PREFIX:
+	case PW_TYPE_IPV6PREFIX:
+	case PW_TYPE_IFID:
+	case PW_TYPE_OCTETS:
+	case PW_TYPE_TLV:
+	case PW_TYPE_STRING:
+	case PW_TYPE_INTEGER64:
+		vp_prints_value(buf, sizeof(buf), vp, '\0');
+		lua_pushstring(L, buf);
+		break;
+
+	case PW_TYPE_BYTE:
+	case PW_TYPE_SHORT:
+	case PW_TYPE_INTEGER:
+	case PW_TYPE_SIGNED:
+		lua_pushinteger(L, vp->vp_integer);
+		break;
+
+	default:
+		ERROR("Cannot convert %s to Lua type", fr_int2str(dict_attr_types, vp->da->type, "<INVALID>"));
+		return -1;
+	}
 	return 0;
 }
 
-static bool rlm_lua_isjit(lua_State *L)
+static VALUE_PAIR *lua_to_c(REQUEST *request, lua_State *L, DICT_ATTR const *da)
 {
-	int idx;
-	bool ret;
+	VALUE_PAIR *vp;
+	vp = pairalloc(request, da);
+	char *p;
+
+	if (lua_isnumber(L, -1) == 1) {
+		switch (vp->da->type) {
+		case PW_TYPE_STRING:
+			p = talloc_asprintf(vp, "%f", lua_tonumber(L, -1));
+			pairstrsteal(vp, p);
+			break;
+
+		case PW_TYPE_INTEGER:
+			vp->vp_integer = (uint32_t) lua_tointeger(L, -1);
+			vp->length = 4;
+			break;
+
+		case PW_TYPE_IPADDR:
+		case PW_TYPE_COMBO_IP:
+			vp->vp_ipaddr = (uint32_t) lua_tointeger(L, -1);
+			vp->length = 4;
+			break;
+
+		case PW_TYPE_DATE:
+			vp->vp_date = (uint32_t) lua_tointeger(L, -1);
+			vp->length = 4;
+			break;
+
+		case PW_TYPE_OCTETS:
+		{
+			lua_Number number = lua_tonumber(L, -1);
+			pairmemcpy(vp, (uint8_t*) &number, sizeof(number));
+		}
+			break;
+
+		case PW_TYPE_BYTE:
+			vp->vp_byte = (uint8_t) lua_tointeger(L, -1);
+			vp->length = 1;
+
+			break;
+		case PW_TYPE_SHORT:
+			vp->vp_short = (uint16_t) lua_tointeger(L, -1);
+			vp->length = 2;
+
+			break;
+		case PW_TYPE_SIGNED:
+			vp->vp_signed = (int32_t) lua_tointeger(L, -1);
+			vp->length = 4;
+			break;
+
+		case PW_TYPE_INTEGER64:
+			vp->vp_integer64 = (uint64_t) lua_tointeger(L, -1);
+			vp->length = 8;
+			break;
+
+		default:
+			RDEBUG("Invalid attribute type");
+			return NULL;
+		}
+
+	} else if (lua_isstring(L, -1)) {
+		pairparsevalue(vp, lua_tostring(L, -1));
+	} else if (lua_islightuserdata(L, -1)) {
+		RDEBUG("Refusing to assign light user data to a value pair");
+		return NULL;
+	} else if (lua_isuserdata(L, -1)) {
+
+	}
+
+	return vp;
+}
+
+/** Check whether the Lua interpreter were actually linked to is LuaJIT
+ *
+ * @param L Lua interpreter.
+ * @return true if were running with LuaJIT else false.
+ */
+bool rlm_lua_isjit(lua_State *L)
+{
+	bool ret = false;
 	RLM_LUA_STACK_SET();
-
 	lua_getglobal(L, "jit");
-	idx = lua_gettop(L);
-
-	if (lua_isnil(L, idx)) {
-		ret = false;
+	if (lua_isnil(L, -1)) {
 		goto done;
 	}
-
-	lua_getfield(L, idx, "version");
-	idx = lua_gettop(L);
-
-	if (lua_tostring(L, idx)) {
-		ret = true;
-		goto done;
-	}
-	ret = false;
+	ret = true;
 done:
 	RLM_LUA_STACK_RESET();
 	return ret;
 }
 
-static int rlm_lua_debug(lua_State *L)
+char const *rlm_lua_version(lua_State *L) {
+	char const *version;
+
+	RLM_LUA_STACK_SET();
+	lua_getglobal(L, "jit");
+	if (!lua_isnil(L, -1)) {
+		lua_getfield(L, -1, "version");	/* Version field in jit table */
+	} else {
+		lua_getglobal(L, "_VERSION");	/* Version global */
+	}
+	version = lua_tostring(L, -1);
+	RLM_LUA_STACK_RESET();
+	if (!version) {
+		return NULL;
+	}
+
+	return version;
+}
+
+/** Lua function to output debug messages
+ *
+ * Lua arguments are one or more strings. Each successive argument will be printed on a new line.
+ *
+ * @param L Lua interpreter.
+ * @return 0 (no arguments)
+ */
+static int l_log_debug(lua_State *L)
 {
 	int idx;
 
 	while ((idx = lua_gettop(L))) {
-		char const *message = lua_tostring(L, idx);
-		DEBUG("%i: %s", idx, message);
+		char const *msg = lua_tostring(L, idx);
 		lua_pop(L, 1);
+		if (!msg) continue;
+
+		DEBUG("%s", msg);
 	}
 
 	return 0;
 }
 
-static int rlm_lua_info(lua_State *L)
+/** Lua function to output informational messages
+ *
+ * Lua arguments are one or more strings. Each successive argument will be printed on a new line.
+ *
+ * @param L Lua interpreter.
+ * @return 0 (no arguments)
+ */
+static int l_log_info(lua_State *L)
 {
 	int idx;
 
 	while ((idx = lua_gettop(L))) {
-		char const *message = lua_tostring(L, idx);
-		INFO("%i: %s", idx, message);
+		char const *msg = lua_tostring(L, idx);
 		lua_pop(L, 1);
+		if (!msg) continue;
+
+		INFO("%s", msg);
 	}
 
 	return 0;
 }
 
-static int rlm_lua_warn(lua_State *L)
+
+/** Lua function to output warning messages
+ *
+ * Lua arguments are one or more strings. Each successive argument will be printed on a new line.
+ *
+ * @param L Lua interpreter.
+ * @return 0 (no arguments)
+ */
+static int l_log_warn(lua_State *L)
 {
 	int idx;
 
 	while ((idx = lua_gettop(L))) {
-		char const *message = lua_tostring(L, idx);
-		WARN("%i: %s", idx, message);
+		char const *msg = lua_tostring(L, idx);
 		lua_pop(L, 1);
+		if (!msg) continue;
+
+		WARN("%s", msg);
 	}
 
 	return 0;
 }
 
-static int rlm_lua_error(lua_State *L)
+/** Lua function to output error messages.
+ *
+ * Lua arguments are one or more strings. Each successive argument will be printed on a new line.
+ *
+ * @param L Lua interpreter.
+ * @return 0 (no arguments)
+ */
+static int l_log_error(lua_State *L)
 {
 	int idx;
 
@@ -137,23 +270,60 @@ static int rlm_lua_error(lua_State *L)
 	return 0;
 }
 
-// radlog(L_DBG, "Top is %i, type is %s", lua_gettop(L), lua_typename(L, lua_type(L, lua_gettop(L))));
-static void rlm_lua_error_old(REQUEST *request, lua_State *L)
+/** Insert cdefs into the lua environment
+ *
+ * For LuaJIT using the FFI is significantly faster than the Lua interface.
+ * Help people wishing to use the FFI by inserting cdefs for standard functions.
+ *
+ * @param L Lua interpreter.
+ * @return 0 (no arguments).
+ */
+static int rlm_lua_cdefs(lua_State *L)
 {
-	int top;
-	char const *errstr;
+	(void) luaL_dostring(L,"\
+		ffi = require(\"ffi\")\
+		ffi.cdef [[\
+			typedef enum log_type {\
+				L_AUTH = 2,\
+				l_log_info = 3,\
+				L_ERR = 4,\
+				L_WARN = 5,\
+				L_PROXY	= 6,\
+				L_ACCT = 7,\
+				L_DBG = 16,\
+				L_DBG_WARN = 17,\
+				L_DBG_ERR = 18,\
+				L_DBG_WARN2 = 19,\
+				L_DBG_ERR2 = 20\
+			} log_type_t;\
+			int radlog(log_type_t lvl, char const *fmt, ...);\
+			]]\
+		fr_srv = ffi.load(\"libfreeradius-server.so\")\
+		fr = ffi.load(\"libfreeradius-lua.so\")\
+		fr.debug = function(msg)\
+		   fr_srv.radlog(16, \"%s\", msg)\
+		end\
+		fr.info = function(msg)\
+		   fr_srv.radlog(3, \"%s\", msg)\
+		end\
+		fr.warn = function(msg)\
+		   fr_srv.radlog(5, \"%s\", msg)\
+		end\
+		fr.error = function(msg)\
+		   fr_srv.radlog(4, \"%s\", msg)\
+		end\
+		");
 
-	top = lua_gettop(L);
-	errstr = lua_tostring(L, top);
-
-	if (request) {
-		REDEBUG("%s", errstr);
-	} else {
-		ERROR("%s", errstr);
-	}
+	return 0;
 }
 
-static int lua_check_arg(lua_State *L, char const *name)
+/** Check whether we can call a Lua function successfully.
+ *
+ * @param L Lua interpreter.
+ * @param name of the function.
+ * @return 0 on success -1 on failure.
+ */
+static int rlm_lua_check_arg(rlm_lua_t *inst, lua_State *L, char const *name)
 {
 	static double a = 5, b = 5;
 	int ret;
@@ -164,8 +334,10 @@ static int lua_check_arg(lua_State *L, char const *name)
 	lua_pushnumber(L, b);
 
 	if (lua_pcall(L, 2, 1, 0) != 0) {
-		rlm_lua_error_old(NULL, L);
+		char const *msg = lua_tostring(L, -1);
+		ERROR("rlm_lua (%s): Call to %s failed: %s", inst->xlat_name, name, msg ? msg : "unknown error");
 		ret = -1;
+
 		goto done;
 	}
 	ret = 0;
@@ -182,21 +354,20 @@ done:
  * @param name of function to check.
  * @returns 0 on success (function is present and correct), or -1 on failure.
  */
-static int lua_check_func(rlm_lua_t *inst, lua_State *L, char const *name)
+static int rlm_lua_check_func(rlm_lua_t *inst, lua_State *L, char const *name)
 {
-	int top, ret;
+	int ret;
 	RLM_LUA_STACK_SET();
 
 	if (name == NULL) return 0;
 
 	lua_getglobal(L, name);
-	top = lua_gettop(L);
 
 	/*
 	 *	Check the global is a function.
 	 */
-	if (!lua_isfunction(L, top)) {
-		int type = lua_type(L, top);
+	if (!lua_isfunction(L, -1)) {
+		int type = lua_type(L, -1);
 
 		if (type == LUA_TNIL) {
 			ERROR("rlm_lua (%s): Function \"%s\" not found ", inst->xlat_name, name);
@@ -209,209 +380,17 @@ static int lua_check_func(rlm_lua_t *inst, lua_State *L, char const *name)
 		goto done;
 	}
 
-	/*if (lua_check_arg(L, name) < 0) {
+/*
+	if (rlm_lua_check_arg(inst, L, name) < 0) {
 		ret = -1;
 		goto done;
 	}
-	*/
+*/
 	ret = 0;
 done:
 	RLM_LUA_STACK_RESET();
 	return ret;
 }
-
-
-
-/** Initialise a new LuaJIT interpreter
- *
- * Creates a new lua_State and verifies all required functions have been loaded correctly.
- *
- * @param out Where to write a pointer to the new state.
- * @param instance Current instance of rlm_lua.
- * @return 0 on success else -1.
- */
-int lua_init(lua_State **out, rlm_lua_t *instance)
-{
-	int top;
-	rlm_lua_t *inst = instance;
-	lua_State *L = luaL_newstate();
-	if (!L) {
-		ERROR("rlm_lua (%s): Failed initialising Lua state", inst->xlat_name);
-
-		return -1;
-	}
-
-	luaL_openlibs(L);
-	/*
-	 *	Load the Lua file into our environment.
-	 *
-	 *	When we spawn new connections we copy the compiled functions
-	 *	between this L the the slave Ls.
-	 */
-	if (luaL_loadfile(L, inst->module) != 0) {
-		top = lua_gettop(L);
-
-		ERROR("rlm_lua (%s): Failed loading file: %s", inst->xlat_name,
-		      top ? lua_tostring(L, top) : "Unknown error");
-
-		goto error;
-	}
-
-	if (lua_pcall(L, 0, LUA_MULTRET, 0) != 0) {
-		top = lua_gettop(L);
-
-		ERROR("rlm_lua (%s): Failed executing script: %s", inst->xlat_name,
-		      top ? lua_tostring(L, top) : "Unknown error");
-	}
-
-	lua_pushcfunction(L, rlm_lua_debug);
-	lua_setglobal(L, "fr_debug");
-	lua_pushcfunction(L, rlm_lua_info);
-	lua_setglobal(L, "fr_info");
-	lua_pushcfunction(L, rlm_lua_warn);
-	lua_setglobal(L, "fr_warn");
-	lua_pushcfunction(L, rlm_lua_error);
-	lua_setglobal(L, "fr_error");
-	lua_pushcfunction(L, rlm_lua_cdefs);
-	lua_setglobal(L, "fr_cdefs");
-	lua_pushcfunction(L, get_attribute);
-	lua_setglobal(L, "get_attribute");
-
-	if (rlm_lua_isjit(L)) {
-		INFO("True");
-	} else {
-		INFO("False");
-	}
-
-	/*
-	 *	Verify all the functions were provided.
-	 */
-	if (lua_check_func(inst, L, inst->func_authorize)
-	    || lua_check_func(inst, L, inst->func_authenticate)
-#ifdef WITH_ACCOUNTING
-	    || lua_check_func(inst, L, inst->func_preacct)
-	    || lua_check_func(inst, L, inst->func_accounting)
-#endif
-	    || lua_check_func(inst, L, inst->func_checksimul)
-#ifdef WITH_PROXY
-	    || lua_check_func(inst, L, inst->func_pre_proxy)
-	    || lua_check_func(inst, L, inst->func_post_proxy)
-#endif
-	    || lua_check_func(inst, L, inst->func_post_auth)
-#ifdef WITH_COA
-	    || lua_check_func(inst, L, inst->func_recv_coa)
-	    || lua_check_func(inst, L, inst->func_send_coa)
-#endif
-	    || lua_check_func(inst, L, inst->func_detach)
-	    || lua_check_func(inst, L, inst->func_xlat)) {
-	 	goto error;
-	}
-
-
-
-	*out = L;
-	return 0;
-
-	error:
-	*out = NULL;
-
-	lua_close(L);
-	return -1;
-}
-
-
-static int c_to_lua(lua_State *L, VALUE_PAIR const *vp)
-{
-	char	buf[1024];
-
-	if (!vp) return -1;
-
-	switch (vp->da->type) {
-
-		case PW_TYPE_ABINARY:
-		case PW_TYPE_DATE:
-		case PW_TYPE_ETHERNET:
-		case PW_TYPE_IPADDR:
-		case PW_TYPE_IPV6ADDR:
-		case PW_TYPE_IPV4PREFIX:
-		case PW_TYPE_IPV6PREFIX:
-		case PW_TYPE_IFID:
-		case PW_TYPE_OCTETS:
-		case PW_TYPE_TLV:
-		case PW_TYPE_STRING:
-			vp_prints_value(buf, sizeof(buf), vp, '\0');
-			lua_pushstring(L, buf);
-			break;
-
-		case PW_TYPE_BYTE:
-		case PW_TYPE_SHORT:
-		case PW_TYPE_INTEGER:
-		case PW_TYPE_SIGNED:
-			lua_pushinteger(L, vp->vp_integer);
-			break;
-
-		case PW_TYPE_INTEGER64:
-			if (sizeof(uint64_t) > sizeof(LUA_NUMBER)) {
-				vp_prints_value(buf, sizeof(buf), vp, '\0');
-				lua_pushstring(L, buf);
-			} else {
-				lua_pushinteger(L, vp->vp_integer64);
-			}
-			break;
-
-		default:
-			ERROR("Unknown type, %i", vp->da->type);
-			return -1;
-	}
-	return 0;
-}
-
-static int do_lua_value(rlm_lua_t *inst, vp_cursor_t *cursor)
-{
-	int idx = 1;
-	VALUE_PAIR *vp;
-	lua_State *L = inst->interpreter;
-	vp = fr_cursor_current(cursor);
-	DICT_ATTR const *da;
-	da = vp->da;
-
-	lua_newtable(L);
-	do {
-		lua_pushnumber(L, idx);
-		if (c_to_lua(L, vp) < 0) {
-			return -1;
-		}
-			lua_settable(L, -3);
-		idx++;
-
-	} while ((vp = fr_cursor_next(cursor)) && da == vp->da);
-
-	lua_setfield(L, -2, da->name);
-
-	return 0;
-}
-
-static int do_lua_tag(rlm_lua_t *inst, vp_cursor_t *cursor)
-{
-	int start;
-	char tag[7];
-	VALUE_PAIR *vp;
-	lua_State *L = inst->interpreter;
-
-	vp = fr_cursor_current(cursor);
-	start = vp->tag;
-
-	lua_newtable(L);
-	do {
-		do_lua_value(inst, cursor);
-	} while ((vp = fr_cursor_current(cursor)) && (start == vp->tag) && vp->da->flags.has_tag);
-
-	snprintf(tag, sizeof(tag), "tag %i", start);
-	lua_setfield(L, -2, tag);
-
-	return 0;
-}
-
 
 static int lua_get_attribute(lua_State *L)
 {
@@ -456,12 +435,12 @@ static int lua_set_attribute(lua_State *L)
 	VALUE_PAIR *vp = NULL, *new;
 	int index;
 	REQUEST *request = fr_thread_local_get(rlm_lua_request);
-	
+
 	if (!lua_islightuserdata(L, lua_upvalueindex(1))) {
 		REDEBUG("DICT_ATTR not available in upvalues, can't determine target attribute");
 		return -1;
 	}
-	
+
 	da = lua_touserdata(L, lua_upvalueindex(1));
 	if (!da) {
 		REDEBUG("Failed retrieving DICT_ATTR from upvalues");
@@ -471,22 +450,20 @@ static int lua_set_attribute(lua_State *L)
 	if ((new = lua_to_c(request, L, da)) == NULL) {
 		return 0;
 	}
-	
+
 	/* Packet list should be light user data too at some point... */
 	fr_cursor_init(&cursor, &request->packet->vps);
 
 	for (index = (int) lua_tointeger(L, -2); index >= 0; index--) {
-		INFO("%i, ", index);
 		vp = fr_cursor_next_by_da(&cursor, da, TAG_ANY);
 		if (!vp) {
-			INFO("%i adding new attribute");
 			fr_cursor_insert(&cursor, new);
 			return 0;
 		}
 	}
-	
+
 	fr_cursor_replace(&cursor, new);
-	
+
 	return 0;
 }
 
@@ -495,11 +472,11 @@ static int lua_next_attr(lua_State *L)
 	vp_cursor_t *cursor;
 	DICT_ATTR const *da;
 	VALUE_PAIR *vp;
-	
+
 	if (!(lua_isuserdata(L, lua_upvalueindex(1)))) {
 		return -1;
 	}
-	
+
 	cursor = lua_touserdata(L, lua_upvalueindex(1));
 	if (!cursor) {
 		DEBUG("Failed retrieving vp_cursor_t from upvalues");
@@ -509,20 +486,19 @@ static int lua_next_attr(lua_State *L)
 	if (!(lua_isuserdata(L, lua_upvalueindex(2)))) {
 		return -1;
 	}
-	
+
 	da = lua_touserdata(L, lua_upvalueindex(2));
 	if (!da) {
 		DEBUG("Failed retrieving DICT_ATTR from upvalues");
 		return -1;
 	}
-	
+
 	/* Packet list should be light user data too at some point... */
 	if((vp = fr_cursor_next_by_da(cursor, da, TAG_ANY)) == NULL) {
 		lua_pushnil(L);
 		return 1;
 	}
-	
-	
+
 	if (c_to_lua(L, vp) < 0) {
 		return -1;
 	}
@@ -532,7 +508,9 @@ static int lua_next_attr(lua_State *L)
 
 static int next_constructor(lua_State *L)
 {
+	vp_cursor_t *cursor;
 	DICT_ATTR const *da;
+	DICT_ATTR *up;
 	VALUE_PAIR *vp;
 
 	da = lua_touserdata(L, lua_upvalueindex(2));
@@ -540,16 +518,18 @@ static int next_constructor(lua_State *L)
 		DEBUG("Failed retrieving DICT_ATTR from upvalues");
 		return -1;
 	}
+	memcpy(&up, &da, sizeof(up));
+
 	vp = lua_touserdata(L, lua_upvalueindex(1));
 	if (!vp) {
 		DEBUG("Failed retrieving DICT_ATTR from upvalues");
 		return -1;
 	}
-	vp_cursor_t* new = (vp_cursor_t*) lua_newuserdata(L, sizeof(vp_cursor_t));
-	fr_cursor_init(new, &vp);
-	lua_pushlightuserdata(L, da);
+	cursor = (vp_cursor_t*) lua_newuserdata(L, sizeof(vp_cursor_t));
+	fr_cursor_init(cursor, &vp);
+	lua_pushlightuserdata(L, up);
 	lua_pushcclosure(L, lua_next_attr, 2);
-	
+
 	return 1;
 }
 
@@ -557,6 +537,7 @@ static int lua_new_attribute_table(lua_State *L)
 {
 	char const *attr;
 	DICT_ATTR const *da;
+	DICT_ATTR *up;
 	REQUEST *request = fr_thread_local_get(rlm_lua_request);
 
 	attr = lua_tostring(L, -1);
@@ -570,25 +551,120 @@ static int lua_new_attribute_table(lua_State *L)
 		REDEBUG("Invalid attribute \"%s\"", attr);
 		return -1;
 	}
+	memcpy(&up, &da, sizeof(up));
 
 	lua_newtable(L);	/* Attribute value table */
 	lua_pushlightuserdata(L, request->packet->vps);
-	lua_pushlightuserdata(L, da);
+	lua_pushlightuserdata(L, up);
 	lua_pushcclosure(L, next_constructor, 2);
-	lua_setfield(L, -2, "next_iter");
+	lua_setfield(L, -2, "pairs");
 	lua_newtable(L);	/* Attribute value meta-table */
-	lua_pushlightuserdata(L, da);
+	lua_pushlightuserdata(L, up);
 	lua_pushcclosure(L, lua_get_attribute, 1);
 	lua_setfield(L, -2, "__index");
-	lua_pushlightuserdata(L, da);
+	lua_pushlightuserdata(L, up);
 	lua_pushcclosure(L, lua_set_attribute, 1);
 	lua_setfield(L, -2, "__newindex");
 
 	lua_setmetatable(L, -2);
 	lua_settable(L, -3);
 	lua_getfield(L, -1, attr);
-	
+
 	return 1;
+}
+
+/** Initialise a new LuaJIT interpreter
+ *
+ * Creates a new lua_State and verifies all required functions have been loaded correctly.
+ *
+ * @param out Where to write a pointer to the new state.
+ * @param instance Current instance of rlm_lua.
+ * @return 0 on success else -1.
+ */
+int lua_init(lua_State **out, rlm_lua_t *instance)
+{
+	rlm_lua_t *inst = instance;
+	lua_State *L = luaL_newstate();
+	if (!L) {
+		ERROR("rlm_lua (%s): Failed initialising Lua state", inst->xlat_name);
+		return -1;
+	}
+
+	luaL_openlibs(L);
+
+	/*
+	 *	Load the Lua file into our environment.
+	 *
+	 *	When we spawn new connections we copy the compiled functions
+	 *	between this L the the slave Ls.
+	 */
+	if (luaL_loadfile(L, inst->module) != 0) {
+		ERROR("rlm_lua (%s): Failed loading file: %s", inst->xlat_name,
+		      lua_gettop(L) ? lua_tostring(L, -1) : "Unknown error");
+
+		goto error;
+	}
+
+	if (lua_pcall(L, 0, LUA_MULTRET, 0) != 0) {
+		ERROR("rlm_lua (%s): Failed executing script: %s", inst->xlat_name,
+		      lua_gettop(L) ? lua_tostring(L, -1) : "Unknown error");
+
+		goto error;
+	}
+
+	if (inst->jit) {
+		DEBUG3("rlm_lua (%s): Initialised new LuaJIT interpreter %p", inst->xlat_name, L);
+		lua_pushcfunction(L, rlm_lua_cdefs);
+		lua_setglobal(L, "fr_cdefs");
+	} else {
+		DEBUG3("rlm_lua (%s): Initialised new Lua interpreter %p", inst->xlat_name, L);
+		lua_newtable(L);
+		lua_pushcfunction(L, l_log_debug);
+		lua_setfield(L, -2, "debug");
+
+		lua_pushcfunction(L, l_log_info);
+		lua_setfield(L, -2, "info");
+
+		lua_pushcfunction(L, l_log_warn);
+		lua_setfield(L, -2, "warn");
+
+		lua_pushcfunction(L, l_log_error);
+		lua_setfield(L, -2, "error");
+		lua_setglobal(L, "fr");
+	}
+
+	/*
+	 *	Verify all the functions were provided.
+	 */
+	if (rlm_lua_check_func(inst, L, inst->func_authorize)
+	    || rlm_lua_check_func(inst, L, inst->func_authenticate)
+#ifdef WITH_ACCOUNTING
+	    || rlm_lua_check_func(inst, L, inst->func_preacct)
+	    || rlm_lua_check_func(inst, L, inst->func_accounting)
+#endif
+	    || rlm_lua_check_func(inst, L, inst->func_checksimul)
+#ifdef WITH_PROXY
+	    || rlm_lua_check_func(inst, L, inst->func_pre_proxy)
+	    || rlm_lua_check_func(inst, L, inst->func_post_proxy)
+#endif
+	    || rlm_lua_check_func(inst, L, inst->func_post_auth)
+#ifdef WITH_COA
+	    || rlm_lua_check_func(inst, L, inst->func_recv_coa)
+	    || rlm_lua_check_func(inst, L, inst->func_send_coa)
+#endif
+	    || rlm_lua_check_func(inst, L, inst->func_detach)
+	    || rlm_lua_check_func(inst, L, inst->func_xlat)) {
+	 	goto error;
+	}
+
+	*out = L;
+	return 0;
+
+	error:
+	*out = NULL;
+
+	lua_close(L);
+	return -1;
 }
 
 int do_lua(rlm_lua_t *inst, REQUEST *request, char const *funcname)
@@ -598,11 +674,18 @@ int do_lua(rlm_lua_t *inst, REQUEST *request, char const *funcname)
 
 	fr_thread_local_set(rlm_lua_request, request);
 
-	RLM_LUA_STACK_SET();
+	L = fr_thread_local_init(rlm_lua_interp, NULL);
+	if (!L) {
+		if (lua_init(&L, inst) < 0) {
+			return -1;
+		}
+		fr_thread_local_set(rlm_lua_interp, L);
+	}
+	RDEBUG2("Calling %s() in interpreter %p", funcname, L);
 
+	RLM_LUA_STACK_SET();
 	pairsort(&request->packet->vps, true);
 	fr_cursor_init(&cursor, &request->packet->vps);
-
 
 	/*
 	 *	Setup the environment
@@ -616,7 +699,6 @@ int do_lua(rlm_lua_t *inst, REQUEST *request, char const *funcname)
 //	lua_pushcfunction(L, new_index);
 //	lua_setfield(L, -2, "__newindex");
 
-
 	lua_setmetatable(L, -2);
 	lua_setglobal(L, "request");
 
@@ -624,124 +706,12 @@ int do_lua(rlm_lua_t *inst, REQUEST *request, char const *funcname)
 	 *	Get the function were going to be calling
 	 */
 	lua_getglobal(L, funcname);
-	lua_pcall(L, 0, 0, 0);
+	if (lua_pcall(L, 0, 0, 0)) {
+
+	} else {
+
+	}
 	RLM_LUA_STACK_RESET();
 
 	return 0;
 }
-
-static int get_attribute(lua_State *L)
-{
-	vp_cursor_t cursor;
-	char const *attr;
-
-	REQUEST *request = fr_thread_local_get(rlm_lua_request);
-
-	fr_cursor_init(&cursor, &request->packet->vps);
-	int idx = 1, idn, tag;
-	VALUE_PAIR *vp;
-	vp = fr_cursor_current(&cursor);
-	DICT_ATTR const *da;
-
-	idn = lua_gettop(L);
-	INFO("%i", idn);
-
-	if (idn > 2) {
-		attr = lua_tostring(L, idn -1);
-		tag = lua_tointeger(L, idn);
-	} else {
-		attr = lua_tostring(L, idn);
-		tag = TAG_ANY;
-	}
-
-	da = dict_attrbyname(attr);
-	if (da == NULL) {
-		REDEBUG("attr %s not found", attr);
-		return -1;
-	}
-	if (!da->flags.has_tag) {
-		tag = TAG_ANY;
-	}
-
-	lua_newtable(L);
-
-	while ((vp = fr_cursor_next_by_da(&cursor, da, tag))) {
-
-		lua_pushnumber(L, idx);
-		if (c_to_lua(L, vp) < 0) {
-			return -1;
-		}
-		lua_settable(L, -3);
-		INFO("%s", attr);
-		idx++;
-	}
-
-	return 1;
-
-}
-
-
-static VALUE_PAIR* lua_to_c (REQUEST *request, lua_State *L, DICT_ATTR const *da)
-
-{
-	int idx = lua_gettop(L);
-	char *p;
-	VALUE_PAIR *vp;
-	vp = pairalloc(request, da);
-
-
-	if (lua_isnumber(L, idx) == 1) {
-
-		switch (vp->da->type) {
-			case PW_TYPE_STRING:
-				p = talloc_asprintf(vp, "%f", lua_tonumber(L, idx));
-				pairstrsteal(vp, p);
-				break;
-			case PW_TYPE_INTEGER:
-				vp->vp_integer = (uint32_t) lua_tointeger(L, idx);
-				vp->length = 4;
-				break;
-			case PW_TYPE_IPADDR:
-			case PW_TYPE_COMBO_IP:
-				vp->vp_ipaddr = (uint32_t) lua_tointeger(L, idx);
-				vp->length = 4;
-				break;
-			case PW_TYPE_DATE:
-				vp->vp_date = (uint32_t) lua_tointeger(L, idx);
-				vp->length = 4;
-				break;
-			case PW_TYPE_OCTETS:
-			{
-				lua_Number number = lua_tonumber(L, idx);
-				pairmemcpy(vp, (uint8_t*) &number, sizeof(number));
-			}
-				break;
-			case PW_TYPE_BYTE:
-				vp->vp_byte = (uint8_t) lua_tointeger(L, idx);
-				vp->length = 1;
-				break;
-			case PW_TYPE_SHORT:
-				vp->vp_short = (uint16_t) lua_tointeger(L, idx);
-				vp->length = 2;
-				break;
-			case PW_TYPE_SIGNED:
-				vp->vp_signed = (int32_t) lua_tointeger(L, idx);
-				vp->length = 4;
-				break;
-			case PW_TYPE_INTEGER64:
-				vp->vp_integer64 = (uint64_t) lua_tointeger(L, idx);
-				vp->length = 8;
-				break;
-			default:
-				ERROR("Unknown type");
-				return NULL;
-		}
-
-	} else if (lua_isstring(L, idx) == 1) {
-
-		pairparsevalue(vp, lua_tostring(L, idx));
-	}
-
-	return vp;
-}
-

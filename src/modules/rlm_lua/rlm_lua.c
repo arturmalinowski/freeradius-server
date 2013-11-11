@@ -87,7 +87,7 @@ static const CONF_PARSER module_config[] = {
  *	that must be referenced in later calls, store a handle to it
  *	in *instance otherwise put a null pointer there.
  */
-static int rlm_lua_instantiate(CONF_SECTION *conf, void *instance)
+static int mod_instantiate(CONF_SECTION *conf, void *instance)
 {
 	rlm_lua_t *inst = instance;
 	lua_State *L;
@@ -101,16 +101,28 @@ static int rlm_lua_instantiate(CONF_SECTION *conf, void *instance)
 		return -1;
 	}
 
+	inst->jit = rlm_lua_isjit(L);
+	if (!inst->jit) {
+		WDEBUG("Using standard Lua interpreter, performance will be suboptimal");
+	}
+
+	DEBUG("rlm_lua (%s): Using %s interpreter", inst->xlat_name, rlm_lua_version(L));
+
 	/*
 	 *	Free the interpreter we just created
 	 */
-	//lua_close(L);
 	inst->interpreter = L;
+
+	return 0;
+}
+
+static int mod_detach(UNUSED void *instance)
+{
 	return 0;
 }
 
 #define DO_LUA(_s)\
-static rlm_rcode_t rlm_lua_##_s(void *instance, REQUEST *request) {\
+static rlm_rcode_t mod_##_s(void *instance, REQUEST *request) {\
 		rlm_lua_t *inst = instance;\
 		if (!inst->func_##_s) {\
 			return RLM_MODULE_NOOP;\
@@ -136,7 +148,7 @@ DO_LUA(accounting)
  *	max. number of logins, do a second pass and validate all
  *	logins by querying the terminal server (using eg. SNMP).
  */
-static rlm_rcode_t rlm_lua_checksimul(UNUSED void *instance, UNUSED REQUEST *request)
+static rlm_rcode_t mod_checksimul(UNUSED void *instance, UNUSED REQUEST *request)
 {
 	return 0;
 }
@@ -156,14 +168,14 @@ module_t rlm_lua = {
 	RLM_TYPE_THREAD_SAFE,		/* type */
 	sizeof(rlm_lua_t),
 	module_config,
-	rlm_lua_instantiate,		/* instantiation */
+	mod_instantiate,		/* instantiation */
 	NULL,				/* detach */
 	{
-		rlm_lua_authenticate,		/* authentication */
-		rlm_lua_authorize,		/* authorization */
-		rlm_lua_preacct,		/* preaccounting */
-		rlm_lua_accounting,		/* accounting */
-		rlm_lua_checksimul,		/* checksimul */
+		mod_authenticate,		/* authentication */
+		mod_authorize,		/* authorization */
+		mod_preacct,		/* preaccounting */
+		mod_accounting,		/* accounting */
+		mod_checksimul,		/* checksimul */
 		NULL,				/* pre-proxy */
 		NULL,				/* post-proxy */
 		NULL				/* post-auth */

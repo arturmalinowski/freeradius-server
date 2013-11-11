@@ -449,12 +449,12 @@ AC_DEFUN([AX_LUA_HEADERS],
   dnl Some default directories to search.
   LUA_SHORT_VERSION=`echo "$LUA_VERSION" | sed 's|\.||'`
   m4_define_default([_AX_LUA_INCLUDE_LIST],
-    [ /usr/include/lua$LUA_VERSION \
-      /usr/include/lua/$LUA_VERSION \
-      /usr/include/lua$LUA_SHORT_VERSION \
-      /usr/local/include/lua$LUA_VERSION \
+    [ /usr/local/include/lua$LUA_VERSION \
       /usr/local/include/lua/$LUA_VERSION \
       /usr/local/include/lua$LUA_SHORT_VERSION \
+      /usr/include/lua$LUA_VERSION \
+      /usr/include/lua/$LUA_VERSION \
+      /usr/include/lua$LUA_SHORT_VERSION \
     ])
 
   dnl Try to find the headers.
@@ -468,11 +468,10 @@ AC_DEFUN([AX_LUA_HEADERS],
          test "x$ac_cv_header_lua_h" != 'xyes'],
     [ dnl Try some common include paths.
       for _ax_include_path in _AX_LUA_INCLUDE_LIST; do
-        test ! -d "$_ax_include_path" && continue
-
         AC_MSG_CHECKING([for Lua headers in])
         AC_MSG_RESULT([$_ax_include_path])
 
+        test ! -d "$_ax_include_path" && continue
         AS_UNSET([ac_cv_header_lua_h])
         AS_UNSET([ac_cv_header_lualib_h])
         AS_UNSET([ac_cv_header_lauxlib_h])
@@ -493,7 +492,7 @@ AC_DEFUN([AX_LUA_HEADERS],
 
   dnl Retrieve our cached include value
   if test x"$ac_cv_lua_include" != 'x' && test x"$LUA_INCLUDE" = 'x'; then
-    LUA_INCLUDE="$ac_cv_lua_include"	
+    LUA_INCLUDE="$ac_cv_lua_include"
   fi
 
   AS_IF([test "x$ac_cv_header_lua_h" = 'xyes'],
@@ -527,10 +526,10 @@ int main(int argc, char ** argv)
       dnl Give the caller a chance to specify a header version
       dnl This is because LuaJIT headers return version 5.1.4 for the above
       dnl test.
-      if test "x$LUA_INCLUDE_VERSION" != 'x'; then
-        LUA_VERSION=$LUA_INCLUDE_VERSION
+      if test "x$LUA_COMPAT_VERSION" != 'x'; then
+        LUA_VERSION=$LUA_COMPAT_VERSION
       fi
-      
+
       dnl Compare this to the previously found LUA_VERSION.
       AC_MSG_CHECKING([if Lua header version matches $LUA_VERSION])
       AS_IF([test "x$ax_cv_lua_header_version" = "x$LUA_VERSION"],

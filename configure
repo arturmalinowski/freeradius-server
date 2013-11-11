@@ -674,6 +674,7 @@ CPPFLAGS
 LDFLAGS
 CFLAGS
 CC
+TARGET_SYSTEM
 DARWIN_CFLAGS
 XCODEBUILD
 SW_VERS
@@ -2582,7 +2583,7 @@ test -n "$target_alias" &&
   program_prefix=${target_alias}-
 
 
-case "$host" in
+case "$target" in
   *-darwin*)
                     { $as_echo "$as_me:${as_lineno-$LINENO}: checking if cc is apple llvm" >&5
 $as_echo_n "checking if cc is apple llvm... " >&6; }
@@ -2685,6 +2686,9 @@ $as_echo "yes" >&6; }
     fi
     ;;
 esac
+
+TARGET_SYSTEM="$target"
+
 
 ac_ext=c
 ac_cpp='$CPP $CPPFLAGS'
@@ -7217,7 +7221,7 @@ $as_echo "$as_me: WARNING: talloc headers not found. Use --with-talloc-include-d
   as_fn_error $? "FreeRADIUS requires libtalloc" "$LINENO" 5
 fi
 
-case "$host" in
+case "$target" in
   *-interix*)
     CFLAGS="$CFLAGS -D_ALL_SOURCE"
     ;;
@@ -9669,7 +9673,7 @@ $as_echo "#define BSDSTYLE 3" >>confdefs.h
 gethostbyaddrrstyle=""
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking gethostbyaddr_r() syntax" >&5
 $as_echo_n "checking gethostbyaddr_r() syntax... " >&6; }
-case "$host" in
+case "$target" in
   *-freebsd*)
                             ac_fn_c_check_decl "$LINENO" "gethostbyaddr_r" "ac_cv_have_decl_gethostbyaddr_r" "
         #ifdef HAVE_NETDB_H
