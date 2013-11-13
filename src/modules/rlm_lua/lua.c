@@ -291,9 +291,9 @@ static int l_log_error(lua_State *L)
  * @param L Lua interpreter.
  * @return 0 (no arguments).
  */
-static int rlm_lua_cdefs(lua_State *L)
+static int rlm_lua_cdefs(rlm_lua_t *inst, lua_State *L)
 {
-	(void) luaL_dostring(L,"\
+	if (luaL_dostring(L,"\
 		ffi = require(\"ffi\")\
 		ffi.cdef [[\
 			typedef enum log_type {\
@@ -311,8 +311,8 @@ static int rlm_lua_cdefs(lua_State *L)
 			} log_type_t;\
 			int radlog(log_type_t lvl, char const *fmt, ...);\
 			]]\
-		fr_srv = ffi.load(\"libfreeradius-server.so\")\
-		fr = ffi.load(\"libfreeradius-lua.so\")\
+		fr_srv = ffi.load(\"freeradius-server\")\
+		fr = ffi.load(\"freeradius-lua\")\
 		fr.debug = function(msg)\
 		   fr_srv.radlog(16, \"%s\", msg)\
 		end\
@@ -325,7 +325,11 @@ static int rlm_lua_cdefs(lua_State *L)
 		fr.error = function(msg)\
 		   fr_srv.radlog(4, \"%s\", msg)\
 		end\
-		");
+		") != 0) {
+		ERROR("rlm_lua (%s): Failed setting up FFI: %s", inst->xlat_name,
+		      lua_gettop(L) ? lua_tostring(L, -1) : "Unknown error");
+		return -1;
+	}
 
 	return 0;
 }
@@ -674,8 +678,7 @@ int lua_init(lua_State **out, rlm_lua_t *instance)
 
 	if (inst->jit) {
 		DEBUG4("rlm_lua (%s): Initialised new LuaJIT interpreter %p", inst->xlat_name, L);
-		lua_pushcfunction(L, rlm_lua_cdefs);
-		lua_setglobal(L, "fr_cdefs");
+		rlm_lua_cdefs(inst, L);
 	} else {
 		DEBUG4("rlm_lua (%s): Initialised new Lua interpreter %p", inst->xlat_name, L);
 		lua_newtable(L);

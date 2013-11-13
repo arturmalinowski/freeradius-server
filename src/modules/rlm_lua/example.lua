@@ -17,20 +17,19 @@ function authenticate()
 end
 
 function authorize()
-
-
-for i in request['user-name'].pairs() do
-	print(i)
-end
+        for i in request['user-name'].pairs() do
+                print(i)
+        end
 
 	print(request)
 	print(request)
 
 
-for k,v in request.pairs_list() do
-	print(k,v)
-end
+        for k,v in request.pairs_list() do
+                print(k,v)
+        end
 
+        fr_srv.radlog(5, "%s", 'test')
 
 	--tprint(get_attribute("user-name"))
 	--tprint(get_attribute("user-password"))
