@@ -448,6 +448,7 @@ static int lua_get_attribute(lua_State *L)
 static int lua_set_attribute(lua_State *L)
 {
 	vp_cursor_t cursor;
+	
 	DICT_ATTR const *da;
 	VALUE_PAIR *vp = NULL, *new;
 	int index;
