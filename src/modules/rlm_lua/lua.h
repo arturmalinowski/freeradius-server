@@ -42,8 +42,13 @@ RCSIDH(lua_h, "$Id$");
  *	be used as the instance handle.
  */
 typedef struct rlm_lua {
+	uint8_t		id;
 	lua_State	*interpreter;
-	bool		jit;
+	bool 		threads;
+#ifdef HAVE_PTHREAD_H
+	pthread_mutex_t	mutex;		//!< Mutex used to protect interpreter
+#endif	
+	bool 		jit;
 	const char	*xlat_name;
 	const char 	*module;
 

@@ -32,6 +32,13 @@ RCSID("$Id$")
 #define RLM_LUA_STACK_SET()	int _rlm_lua_stack_state = lua_gettop(L)
 #define RLM_LUA_STACK_RESET()	lua_settop(L, _rlm_lua_stack_state)
 
+#ifndef HAVE_PTHREAD_H
+#define pthread_mutex_lock(_x)
+#define pthread_mutex_unlock(_x)
+#endif
+
+
+
 fr_thread_local_setup(REQUEST *, rlm_lua_request);	/* macro */
 fr_thread_local_setup(lua_State *, rlm_lua_interp);	/* macro */
 
@@ -129,19 +136,24 @@ static VALUE_PAIR *lua_to_c(REQUEST *request, lua_State *L, DICT_ATTR const *da)
 			break;
 
 		default:
-			RDEBUG("Invalid attribute type");
+			REDEBUG("Invalid attribute type");
 			return NULL;
 		}
 
 	} else if (lua_isstring(L, -1)) {
 		pairparsevalue(vp, lua_tostring(L, -1));
-	} else if (lua_islightuserdata(L, -1)) {
-		RDEBUG("Refusing to assign light user data to a value pair");
+	} else if (lua_islightuserdata(L, -1) || lua_isuserdata(L, -1)) {
+		size_t len = lua_objlen(L, -1);
+		if(len == 0) {
+			REDEBUG("Cant determine length of user data");
+			return NULL;
+		}
+		vp -> vp_octets = talloc_memdup(vp, lua_tostring(L, -1), lua_objlen(L, -1));
+	} else {
+		REDEBUG("Unknown data type");
 		return NULL;
-	} else if (lua_isuserdata(L, -1)) {
-
 	}
-
+	
 	return vp;
 }
 
@@ -164,7 +176,8 @@ done:
 	return ret;
 }
 
-char const *rlm_lua_version(lua_State *L) {
+char const *rlm_lua_version(lua_State *L)
+{
 	char const *version;
 
 	RLM_LUA_STACK_SET();
@@ -467,6 +480,53 @@ static int lua_set_attribute(lua_State *L)
 	return 0;
 }
 
+static int lua_list_attr(lua_State *L)
+{
+	vp_cursor_t *cursor;
+	VALUE_PAIR *vp;
+	
+	if (!(lua_isuserdata(L, lua_upvalueindex(1)))) {
+		return -1;
+	}
+	
+	cursor = lua_touserdata(L, lua_upvalueindex(1));
+	if (!cursor) {
+		DEBUG("Failed retrieving vp_cursor_t from upvalues");
+		return -1;
+	}
+	
+	/* Packet list should be light user data too at some point... */
+	if((vp = fr_cursor_current(cursor)) == NULL) {
+		lua_pushnil(L);
+		return 1;
+	}
+	
+	lua_pushstring(L, vp->da->name);
+	
+	if (c_to_lua(L, vp) < 0) {
+		return -1;
+	}
+
+	fr_cursor_next(cursor);
+	
+	return 2;
+}
+
+static int list_constructor(lua_State *L)
+{
+	vp_cursor_t *cursor;
+	
+	cursor = lua_touserdata(L, lua_upvalueindex(1));
+	if (!cursor) {
+		DEBUG("Failed retrieving vp_cursor_t from upvalues");
+		return -1;
+	}
+	lua_pushlightuserdata(L, cursor);
+	lua_pushcclosure(L, lua_list_attr, 1);
+	
+	return 1;
+}
+
 static int lua_next_attr(lua_State *L)
 {
 	vp_cursor_t *cursor;
@@ -670,17 +730,23 @@ int lua_init(lua_State **out, rlm_lua_t *instance)
 int do_lua(rlm_lua_t *inst, REQUEST *request, char const *funcname)
 {
 	vp_cursor_t cursor;
-	lua_State *L = inst->interpreter;
+	lua_State *L;
 
 	fr_thread_local_set(rlm_lua_request, request);
 
-	L = fr_thread_local_init(rlm_lua_interp, NULL);
-	if (!L) {
-		if (lua_init(&L, inst) < 0) {
-			return -1;
+	if (!inst->threads) {
+		L = inst->interpreter;
+		pthread_mutex_lock(&inst->mutex);
+	} else {
+		L = fr_thread_local_init(rlm_lua_interp, NULL);
+		if (!L) {
+			if (lua_init(&L, inst) < 0) {
+				return -1;
+			}
+			fr_thread_local_set(rlm_lua_interp, L);
 		}
-		fr_thread_local_set(rlm_lua_interp, L);
-	}
+	}	
+	
 	RDEBUG2("Calling %s() in interpreter %p", funcname, L);
 
 	RLM_LUA_STACK_SET();
@@ -691,6 +757,9 @@ int do_lua(rlm_lua_t *inst, REQUEST *request, char const *funcname)
 	 *	Setup the environment
 	 */
 	lua_newtable(L);	/* Attribute list table */
+	lua_pushlightuserdata(L, &cursor);
+	lua_pushcclosure(L, list_constructor, 1);
+	lua_setfield(L, -2, "pairs_list");
 	lua_newtable(L);	/* Attribute list meta-table */
 	lua_pushinteger(L, PAIR_LIST_REQUEST);
 	lua_pushcclosure(L, lua_new_attribute_table, 1);
@@ -712,6 +781,9 @@ int do_lua(rlm_lua_t *inst, REQUEST *request, char const *funcname)
 
 	}
 	RLM_LUA_STACK_RESET();
+	if (!inst->threads) {
+		pthread_mutex_unlock(&inst->mutex);
+	}
 
 	return 0;
 }

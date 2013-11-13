@@ -26,6 +26,7 @@ RCSID("$Id$")
 
 #include "lua.h"
 
+static uint8_t id;
 /*
  *	A mapping of configuration file names to internal variables.
  *
@@ -39,6 +40,9 @@ static const CONF_PARSER module_config[] = {
 	{ "filename",  PW_TYPE_FILE_INPUT | PW_TYPE_REQUIRED,
 	  offsetof(rlm_lua_t,module), NULL,  NULL},
 
+	{ "threads", PW_TYPE_BOOLEAN,
+	  offsetof(rlm_lua_t,threads), NULL, "no"},
+	  
 	{ "func_instantiate", PW_TYPE_STRING_PTR,
 	  offsetof(rlm_lua_t,func_instantiate), NULL, NULL},
 	{ "func_detach", PW_TYPE_STRING_PTR,
@@ -96,7 +100,12 @@ static int mod_instantiate(CONF_SECTION *conf, void *instance)
 	if (!inst->xlat_name) {
 		inst->xlat_name = cf_section_name1(conf);
 	}
-
+	
+#ifdef HAVE_PTHREAD_H
+	if (!inst->threads) {
+		pthread_mutex_init(&inst->mutex, NULL);
+	}
+#endif
 	if (lua_init(&L, inst) < 0) {
 		return -1;
 	}
@@ -112,6 +121,7 @@ static int mod_instantiate(CONF_SECTION *conf, void *instance)
 	 *	Free the interpreter we just created
 	 */
 	inst->interpreter = L;
+	id++;
 
 	return 0;
 }
