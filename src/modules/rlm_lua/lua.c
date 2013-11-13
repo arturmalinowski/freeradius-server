@@ -153,7 +153,7 @@ static VALUE_PAIR *lua_to_c(REQUEST *request, lua_State *L, DICT_ATTR const *da)
 		REDEBUG("Unknown data type");
 		return NULL;
 	}
-	
+
 	return vp;
 }
 
@@ -484,38 +484,38 @@ static int lua_list_attr(lua_State *L)
 {
 	vp_cursor_t *cursor;
 	VALUE_PAIR *vp;
-	
+
 	if (!(lua_isuserdata(L, lua_upvalueindex(1)))) {
 		return -1;
 	}
-	
+
 	cursor = lua_touserdata(L, lua_upvalueindex(1));
 	if (!cursor) {
 		DEBUG("Failed retrieving vp_cursor_t from upvalues");
 		return -1;
 	}
-	
+
 	/* Packet list should be light user data too at some point... */
 	if((vp = fr_cursor_current(cursor)) == NULL) {
 		lua_pushnil(L);
 		return 1;
 	}
-	
+
 	lua_pushstring(L, vp->da->name);
-	
+
 	if (c_to_lua(L, vp) < 0) {
 		return -1;
 	}
 
 	fr_cursor_next(cursor);
-	
+
 	return 2;
 }
 
 static int list_constructor(lua_State *L)
 {
 	vp_cursor_t *cursor;
-	
+
 	cursor = lua_touserdata(L, lua_upvalueindex(1));
 	if (!cursor) {
 		DEBUG("Failed retrieving vp_cursor_t from upvalues");
@@ -523,7 +523,7 @@ static int list_constructor(lua_State *L)
 	}
 	lua_pushlightuserdata(L, cursor);
 	lua_pushcclosure(L, lua_list_attr, 1);
-	
+
 	return 1;
 }
 
@@ -673,11 +673,11 @@ int lua_init(lua_State **out, rlm_lua_t *instance)
 	}
 
 	if (inst->jit) {
-		DEBUG3("rlm_lua (%s): Initialised new LuaJIT interpreter %p", inst->xlat_name, L);
+		DEBUG4("rlm_lua (%s): Initialised new LuaJIT interpreter %p", inst->xlat_name, L);
 		lua_pushcfunction(L, rlm_lua_cdefs);
 		lua_setglobal(L, "fr_cdefs");
 	} else {
-		DEBUG3("rlm_lua (%s): Initialised new Lua interpreter %p", inst->xlat_name, L);
+		DEBUG4("rlm_lua (%s): Initialised new Lua interpreter %p", inst->xlat_name, L);
 		lua_newtable(L);
 		lua_pushcfunction(L, l_log_debug);
 		lua_setfield(L, -2, "debug");
@@ -734,19 +734,23 @@ int do_lua(rlm_lua_t *inst, REQUEST *request, char const *funcname)
 
 	fr_thread_local_set(rlm_lua_request, request);
 
+#ifdef HAVE_PTHREAD_H
 	if (!inst->threads) {
 		L = inst->interpreter;
 		pthread_mutex_lock(&inst->mutex);
 	} else {
-		L = fr_thread_local_init(rlm_lua_interp, NULL);
+		L = pthread_getspecific(inst->key);
 		if (!L) {
 			if (lua_init(&L, inst) < 0) {
 				return -1;
 			}
-			fr_thread_local_set(rlm_lua_interp, L);
+			pthread_setspecific(inst->key, L);
 		}
-	}	
-	
+	}
+#else
+	L = inst->interpreter;
+#endif
+
 	RDEBUG2("Calling %s() in interpreter %p", funcname, L);
 
 	RLM_LUA_STACK_SET();

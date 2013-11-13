@@ -42,7 +42,7 @@ static const CONF_PARSER module_config[] = {
 
 	{ "threads", PW_TYPE_BOOLEAN,
 	  offsetof(rlm_lua_t,threads), NULL, "no"},
-	  
+
 	{ "func_instantiate", PW_TYPE_STRING_PTR,
 	  offsetof(rlm_lua_t,func_instantiate), NULL, NULL},
 	{ "func_detach", PW_TYPE_STRING_PTR,
@@ -80,6 +80,14 @@ static const CONF_PARSER module_config[] = {
   { NULL, -1, 0, NULL, NULL }		/* end the list */
 };
 
+/** Destroy the interpreter when it's associated worker exits
+ *
+ * @param L The interpreter to destroy.
+ */
+static void _tls_interp_destroy(void *L)
+{
+	lua_close((lua_State *) L);
+}
 
 /*
  *	Do any per-module initialization that is separate to each
@@ -100,10 +108,17 @@ static int mod_instantiate(CONF_SECTION *conf, void *instance)
 	if (!inst->xlat_name) {
 		inst->xlat_name = cf_section_name1(conf);
 	}
-	
+
 #ifdef HAVE_PTHREAD_H
 	if (!inst->threads) {
 		pthread_mutex_init(&inst->mutex, NULL);
+	} else {
+		int errno;
+		errno = pthread_key_create(&inst->key, _tls_interp_destroy);
+		if (errno != 0) {
+			ERROR("Error creating pthread key for lua interpreter: %s", fr_syserror(errno));
+			return -1;
+		}
 	}
 #endif
 	if (lua_init(&L, inst) < 0) {
@@ -179,9 +194,9 @@ module_t rlm_lua = {
 	sizeof(rlm_lua_t),
 	module_config,
 	mod_instantiate,		/* instantiation */
-	NULL,				/* detach */
+	mod_detach,			/* detach */
 	{
-		mod_authenticate,		/* authentication */
+		mod_authenticate,	/* authentication */
 		mod_authorize,		/* authorization */
 		mod_preacct,		/* preaccounting */
 		mod_accounting,		/* accounting */
